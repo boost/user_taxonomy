@@ -1,0 +1,8 @@
+;$Id$
+name = "User Taxonomy"
+description = "Assign taxonomy terms to users"
+core = 6.x
+php = 5.1
+version = "6.x-1.x-dev"
+dependencies[] = taxonomy
+

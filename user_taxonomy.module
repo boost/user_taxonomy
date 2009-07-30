@@ -1,0 +1,459 @@
+<?php
+// $Id$
+/**
+* @file
+* This module allows adding taxonomy terms to users, and controlling user content permissions via the terms
+*/
+function user_taxonomy_form_alter(&$form, $form_state, $form_id) {
+  if($form_id == 'taxonomy_form_vocabulary') {
+    $vid = $form['vid']['#value'];
+    
+    $form['user_taxonomy'] = array(
+      '#type' => 'fieldset',
+      '#title' => 'User Taxonomy Roles',
+      
+      'table' => array(
+        '#prefix' => "<table><thead>",
+        '#value' => user_taxonomy_form_header(),
+        '#suffix' => "</thead><tbody>",
+      ),
+    );
+    
+    $options = array('use', 'multiple', 'mandatory');
+    
+    foreach($options as $option) {
+      $form['user_taxonomy']['row_opening_'.$option] = array('#value' => '<tr>');
+      $form['user_taxonomy']['row_title_'.$option] = array(
+        '#prefix' => '<td>',
+        '#value' => user_taxonomy_row_title($option),
+        '#suffix' => '</td>',
+      );
+      
+      foreach(user_taxonomy_get_roles() as $role) {
+        $default = NULL;
+        
+        // If this vocab has a vid then fetch the current values for defaults
+        if($vid) {
+          $current = user_taxonomy_vocabulary_roles($vid, $role->rid);
+          
+          if(count($current) > 0) {
+            $default = ($option == 'use' || $current[0]->$option == 1);
+          }
+        }
+        
+        $form['user_taxonomy']['user_taxonomy_'.$option.'_'.$role->rid] = array(
+          '#prefix' => '<td align="center">',
+          '#default_value' => $default,
+          '#type' => 'checkbox',
+          '#suffix' => '</td>',
+        );
+      }
+      
+      $form['user_taxonomy']['row_closing_'.$option] = array('#value' => '</tr>');      
+    }
+    
+    $form['user_taxonomy']['closing'] = array(
+      '#value' => '</tbody></table>'
+    );
+    
+    $form['#submit'] = array_merge(array('user_taxonomy_vocabulary_submit'), $form['#submit']);
+  }
+}
+
+function user_taxonomy_row_title($option) {
+  switch($option) {
+    case 'use': return t('Use taxonomy');
+    case 'multiple': return t('Allow multiple terms');
+    case 'mandatory': return t('Term must be selected');
+  }
+  
+  return '';
+}
+
+function user_taxonomy_get_roles() {
+  static $roles = array();
+  
+  if (!count($roles)) {
+    $role_sql = "SELECT * FROM {role}";
+    $role_results = db_query($role_sql);
+    
+    while($role = db_fetch_object($role_results)) {
+      if($role->name != 'anonymous user')
+        $roles[] = $role;
+    }
+  }
+  
+  return $roles;
+}
+
+function user_taxonomy_form_header() {
+  $output = '<th>&nbsp;</th>';
+  
+  foreach(user_taxonomy_get_roles() as $role) {
+    $output .= '<th align="center">'.$role->name."</th>";
+  }
+  
+  return $output;
+}
+
+function user_taxonomy_vocabulary_submit($form_id, $form_values) {
+  $vid = $form_values['values']['vid'];  
+  $values = $form_values['values'];
+  $roles = array();
+  
+  foreach($values as $key => $value) {
+    $matches = array();
+    if(ereg('user_taxonomy_(.+)_([0-9]+)', $key, $matches)) {
+     $option = $matches[1];
+     $rid = $matches[2];
+     
+     if(!$roles[$rid]) {
+       $roles[$rid] = array('rid' => $rid);
+     }
+     
+     $roles[$rid][$option] = $value;
+    }
+  }
+  
+  foreach($roles as $role) {
+    $sql = 'DELETE FROM {user_taxonomy_vocabulary_roles} WHERE vid = %d AND rid = %d';
+    db_query($sql, $vid, $role['rid']);
+    
+    if($role['use'] == 1) {
+      $sql = 'INSERT INTO {user_taxonomy_vocabulary_roles} (vid,rid,multiple,mandatory) VALUES(%d, %d, %d, %d)';
+      db_query($sql, $vid, $role['rid'], $role['multiple'], $role['mandatory']);
+    }
+  }
+}
+
+/**
+* Implementation of hook_perm()
+* Allows administrator to determine who can administer and who can access regions
+*/
+function user_taxonomy_perm() {
+  // return array('administer regions', 'access regions', 'view regional content', 'update regional content', 'delete regional content');
+  return array(
+    'view content with taxonomy',
+    'update content with taxonomy',
+    'delete content with taxonomy',
+    'administer user terms'
+  );
+}
+
+/**
+* Fetch the records that join vocabularies with roles. If a vid is specified
+* only fetch for records for a vocabulary. If both a vid and rid are passed
+* only 1 or 0 objects will be returned.
+*/
+function user_taxonomy_vocabulary_roles($vid = NULL, $rid = NULL) {
+  $sql = 'SELECT * FROM {user_taxonomy_vocabulary_roles}';
+    
+  if($vid) {
+    $sql .= ' WHERE vid = %d';
+  }
+  
+  if($vid && $rid) {
+    $sql .= ' AND rid = %d';
+  }
+    
+  $results = db_query($sql, $vid, $rid);
+  $returns = array();
+  
+  while($utv = db_fetch_object($results)) {
+    $returns[] = $utv;
+  }
+  
+  return $returns;
+}
+
+/**
+* Fetch the terms that are attached to a user
+*/
+function user_taxonomy_user_taxonomies($user) {
+  $tids = array();
+  $terms = array();
+  
+  // Fetch tids
+  $results = db_query("SELECT tid FROM {user_taxonomy} WHERE uid = %d", $user->uid);
+  while($tid = db_result($results)) { $tids[] = $tid; }
+  
+  // Fetch terms
+  if(count($tids) > 0) {
+    $results = db_query("SELECT * FROM {term_data} WHERE tid IN (".implode(',', $tids).")");
+    while($term = db_fetch_object($results)) { $terms[] = $term; }
+  }
+  
+  return $terms;
+}
+
+/**
+* Build the taxonomy fields on the user form.
+*/
+function user_taxonomy_build_user_form(&$user) {
+  $vocabulary_roles = user_taxonomy_vocabulary_roles();
+  $role_vocabs = array();
+  
+  // Add a field indicating taxonomies are being submitted
+  $fields['user_taxonomy']['user_taxonomy'] = array(
+    '#type' => 'hidden',
+    '#value' => 1
+  );
+  
+  // Create a table
+  $fields['user_taxonomy']['table_opening'] = array('#value' => '<table><tbody><tr>');
+  
+  foreach($vocabulary_roles as $utv) {
+    // Add the vid to $role_vocabs[rid]
+    if(!$role_vocabs[$utv->rid])
+      $role_vocabs[$utv->rid] = array();
+    $role_vocabs[$utv->rid][] = $utv->vid;
+    
+    // Get the terms
+    $terms = taxonomy_get_tree($utv->vid);
+    // Load the vocabulary
+    $vocab = taxonomy_vocabulary_load($utv->vid);
+    $options = array();
+    
+    // Add a no term option if the vocab is not mandatory
+    // and does not support multiple terms
+    if($utv->mandatory == 0 && $utv->multiple == 0) {
+      $options[0] = t('-- No term --');
+    }
+    
+    // Add the term names as options
+    foreach($terms as $term) {
+      $options[$term->tid] = $term->name;
+    }
+    
+    // Load the users current terms and add as default values
+    $default_values = array();
+    $user_terms = user_taxonomy_user_taxonomies($user);
+    
+    foreach($user_terms as $term) {
+      if($term->vid == $utv->vid) {
+        $default_values[] = $term->tid;
+      }
+    }
+
+    // Add the select field for taxonomy terms in this vocab
+    $fields['user_taxonomy']['user_taxonomy_'.$utv->vid] = array(
+      '#type' => 'select',
+      '#title' => $vocab->name,
+      '#options' => $options,
+      '#default_value' => $default_values,
+      '#multiple' => ($utv->multiple == 1),
+      '#prefix' => '<td valign="top"><div class="user_taxonomy" id="user_taxonomy_'.$utv->vid.'" style="display:none">',
+      '#suffix' => '</div></td>'
+    );
+  }
+
+  // Close the table
+  $fields['user_taxonomy']['table_closing'] = array('#value' => '</tr></tbody></table>');    
+
+  // Make the fieldset
+  $fields['user_taxonomy']['#type'] = 'fieldset';
+  $fields['user_taxonomy']['#title'] = t('Taxonomy');
+  
+  // Add the javascript
+  $fields['user_taxonomy']['js'] = array(
+    '#prefix' => '<script type="text/javascript">',
+    '#value' => user_taxonomy_build_user_form_javascript($role_vocabs),
+    '#suffix' => '</script>'
+  );
+  
+  return $fields;
+}
+
+/**
+* This function returns javascript for showing and hiding the vocab term
+* selectors on the user editing form.
+*/
+function user_taxonomy_build_user_form_javascript(&$role_vocabs) {
+  $javascript = '';
+  $javascript .= "userTaxonomyUpdate = function() {
+    $('.user_taxonomy').css('display', 'none');
+    var vids = [];";
+    
+  foreach($role_vocabs as $rid => $vids) {
+    $javascript .= "if($(\"input[name='roles[$rid]']\").attr('checked')) {";
+    foreach($vids as $vid) {
+      $javascript .= "vids.push($vid);";
+    }      
+    $javascript .= "};";
+  }
+  
+  $javascript .= "jQuery.each(vids, function(index,vid) {
+    $('#user_taxonomy_'+vid).css('display', '');
+  });";
+    
+  $javascript .= "};";
+  
+  foreach($role_vocabs as $rid => $vids) {    
+    $javascript .= "$(\"input[name='roles[$rid]']\").change(function(e) {
+      userTaxonomyUpdate();
+    });";
+  }
+  
+  $javascript .= 'userTaxonomyUpdate();';
+  
+  return $javascript;
+}
+
+/**
+* Take a user form submission and create/update the taxonomy term links
+*/
+function user_taxonomy_submit_user_form(&$edit, &$user) {
+  $vocabulary_roles = user_taxonomy_vocabulary_roles();
+  $roles = user_taxonomy_get_roles_from_form($edit);  
+  
+  // Clear the terms for this user
+  db_query('DELETE FROM {user_taxonomy} WHERE uid = %d', $user->uid);
+      
+  // Insert the new terms
+  foreach($vocabulary_roles as $utv) {
+    $key = 'user_taxonomy_'.$utv->vid;
+    
+    // Only do the vocabs associated with the user's roles
+    if(in_array($utv->rid, $roles)) {     
+      $tids = array();
+    
+      // Make sure the tids are in an array
+      if(is_array($edit[$key])) {
+        $tids = $edit[$key];
+      } else {
+        $tids = array($edit[$key]);
+      }
+          
+      foreach($tids as $tid) {
+        if($tid > 0)
+          db_query('INSERT INTO {user_taxonomy} (uid,tid) VALUES(%d,%d)', $user->uid, $tid);
+      }
+    }
+    
+    // Nullify this now we're done with it
+    $edit[$key] = NULL;
+  }
+      
+  // Nullify this now we're done with it
+  $edit['user_taxonomy'] = NULL;
+}
+
+/**
+* Validate the terms submitted as part of a user form
+*/
+function user_taxonomy_validate_user_form(&$edit) {
+  $vocabulary_roles = user_taxonomy_vocabulary_roles();
+  $roles = user_taxonomy_get_roles_from_form($edit);
+  
+  // Validate mandatory terms are selected    
+  foreach($vocabulary_roles as $utv) {
+    // We only check for the roles the user is in
+    if(in_array($utv->rid, $roles)) {
+      $key = 'user_taxonomy_'.$utv->vid;
+      $error = NULL;
+    
+      if(is_array($edit[$key]) && $utv->multiple == 0)
+        $error = t('You cannot select multiple terms for this vocabulary: %s');
+      
+      if($utv->mandatory == 1) {
+        if(is_array($edit[$key]) && count($edit[$key]) == 0)
+          $error = t('You must select at least one term for the vocabulary: %s');
+        elseif((!is_array($edit[$key])) && ((!$edit[$key]) || $edit[$key] == 0))
+          $error = t('You must select a term for the vocabulary: %s');
+      }
+
+      if($error) {
+        $vocab = taxonomy_vocabulary_load($utv->vid);
+        form_set_error('', sprintf($error, $vocab->name));
+      }        
+    }
+  }
+}
+
+/**
+* This function returns an array of rids from a form with a key of 'roles'
+*/
+function user_taxonomy_get_roles_from_form($form) {
+  $returns = NULL;
+  
+  if($form && $form['roles']) {
+    $returns = array();
+    foreach($form['roles'] as $key => $value) { if($value > 0) $returns[] = $key; }
+  }
+  
+  return $returns;
+}
+
+
+/**
+* Implementation of hook_user
+* 
+* Adds taxonomy selection to user form
+*/
+function user_taxonomy_user($op, &$edit, &$user, $category = NULL) {  
+  if((user_access('administer user terms') && user_access('administer permissions')) && ($op == 'register' || $op == 'form')) {
+    return user_taxonomy_build_user_form($user);
+  } elseif(($op == 'insert' || $op == 'update') && $edit['user_taxonomy'] == 1) {
+    user_taxonomy_submit_user_form($edit, $user);
+  } elseif($op == 'validate' && $edit['user_taxonomy'] == 1) {
+    user_taxonomy_validate_user_form($edit);
+  } elseif($op == 'load') {
+    // Load in the terms
+    $user->taxonomy = user_taxonomy_user_taxonomies($user);
+  }
+}
+
+/**
+ * Implementation of hook_node_grants
+ */
+function user_taxonomy_node_grants($account, $op) {
+  if(user_access($op.' content with taxonomy', $account)) {
+    $terms = user_taxonomy_user_taxonomies($account);
+    $access = array();
+    
+    $map_tids = create_function('$term', 'return $term->tid;');
+    $tids = array_unique(array_map($map_tids, $terms));
+    
+    $access['user_taxonomy'] = $tids;    
+    return $access;
+  }
+}
+
+/**
+ * Implementation of hook_node_access_records
+ */
+function user_taxonomy_node_access_records($node) {
+  $grants = array();
+  $terms = array();
+  $ops = array('view', 'delete', 'update');
+  
+  foreach($node->taxonomy as $tax) {
+    foreach($tax as $tid) {
+      $terms[] = taxonomy_get_term($tid);
+    }
+  }
+
+  $map_tids = create_function('$term', 'return $term->tid;');
+  $tids = array_unique(array_map($map_tids, $terms));
+
+  $map_vids = create_function('$vocab', 'return $vocab->vid;');
+  $vocabulary_roles = user_taxonomy_vocabulary_roles();
+  $vids = array_map($map_vids, $vocabulary_roles);
+
+  
+  foreach($tids as $tid) {
+    if($tid) {    
+      $grant = array();
+      $grant['realm'] = 'user_taxonomy';
+      $grant['gid'] = $tid;
+    
+      foreach($ops as $op) {
+        $grant['grant_'.$op] = 1;
+      }
+    
+      $grants[] = $grant;
+    }
+  }
+    
+  return $grants;
+}

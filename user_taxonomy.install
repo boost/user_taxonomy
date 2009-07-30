@@ -1,0 +1,91 @@
+<?php
+// $Id: user_taxonomy.install,v 1 2009/05/26 Jeremy Wells Exp $
+
+/**
+ * @file
+ * Install file for IP to Region module.
+ */
+
+/**
+ * Implementation of hook_install().
+ */
+function user_taxonomy_install() {
+  // Create tables.
+  drupal_install_schema('user_taxonomy');
+} 
+
+/**
+ * Implementation of hook_schema().
+ */
+function user_taxonomy_schema() {
+  $schema['user_taxonomy']                  = array(
+    'description'                           => t('User taxonomy data'),
+    'fields'                                => array(
+      'utid'                                => array(
+        'description'                       => t('Unique Row ID'),
+        'type'                              => 'serial',
+        'not null'                          => TRUE,
+      ),
+      'uid'                                 => array(
+        'description'                       => t('User UID'),
+        'type'                              => 'int',
+        'not null'                          => TRUE,
+      ),
+      'tid'                                 => array(
+        'description'                       => t('Term ID'),
+        'type'                              => 'int',
+        'not null'                          => TRUE,
+      ),
+    ),
+    'primary key'                           => array('utid'),
+  );
+
+  $schema['user_taxonomy_vocabulary_roles'] = array(
+    'description'                           => t('Vocabulary data for roles'),
+    'fields'                                => array(
+      'utid'                                => array(
+        'description'                       => t('Unique Row ID'),
+        'type'                              => 'serial',
+        'not null'                          => TRUE,
+      ),
+      'vid'                                 => array(
+        'description'                       => t('Vocabulary ID'),
+        'type'                              => 'int',
+        'not null'                          => TRUE,
+      ),
+      'rid'                                 => array(
+        'description'                       => t('Role ID'),
+        'type'                              => 'int',
+        'not null'                          => TRUE,
+      ),
+      'multiple'                            => array(
+        'description'                       => t('Allow multiple terms to be assigned to user'),
+        'type'                              => 'int',
+        'size'                              => 'tiny',
+        'default'                           => 0,
+        'not null'                          => TRUE,
+      ),
+      'mandatory'                           => array(
+        'description'                       => t('User must have term flag'),
+        'type'                              => 'int',
+        'size'                              => 'tiny',
+        'default'                           => 0,
+        'not null'                          => TRUE,
+      ),
+    ),
+    'primary key'                           => array('utid'),
+    'unique keys'                           => array(
+      'vid_rid'                             => array('vid', 'rid'),
+    ),
+  );
+
+
+  return $schema;
+}
+
+/**
+ * Implementation of hook_uninstall().
+ */
+function user_taxonomy_uninstall() {
+  drupal_uninstall_schema('user_taxonomy');
+}
