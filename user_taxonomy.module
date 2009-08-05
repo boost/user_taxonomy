@@ -457,3 +457,4 @@ function user_taxonomy_node_access_records($node) {
     
   return $grants;
 }
+
